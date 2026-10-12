@@ -2,7 +2,7 @@
 <html lang="vi">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Korean Vocab Sync</title>
+<title>Korean Vocab V11</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
 :root{--bg:#f5f7fb;--card:#fff;--text:#172033;--muted:#687386;--primary:#356df3;--good:#159447;--bad:#d93636;--border:#e4e8ef}
@@ -39,6 +39,53 @@ let cats=[],words=[],quiz={};
 let selectedAddCat='';
 let currentFilterCat='all';
 let bulkRows=[];let bulkSource='';let bulkBusy=false;
+let activeUserId='';
+const localKey=(name)=>'kv11:'+activeUserId+':'+name;
+function localSave(name,data){if(!activeUserId)return;try{sessionStorage.setItem(localKey(name),JSON.stringify(data))}catch(e){console.warn('Không lưu được bản nháp',e)}}
+function localRead(name){if(!activeUserId)return null;try{return JSON.parse(sessionStorage.getItem(localKey(name))||'null')}catch(e){return null}}
+function localClear(name){if(!activeUserId)return;try{sessionStorage.removeItem(localKey(name))}catch(e){}}
+function saveWordsDraft(){
+ if(!$('#ko'))return;
+ localSave('draft',{ko:$('#ko')?.value||'',vi:$('#vi')?.value||'',newcat:$('#newcat')?.value||'',cat:$('#cat')?.value||'',bulkText:$('#bulkText')?.value||'',bulkCat:$('#bulkCat')?.value||'',bulkRows,bulkSource});
+}
+function restoreWordsDraft(){
+ const d=localRead('draft');if(!d)return;
+ for(const id of ['ko','vi','newcat','bulkText'])if($('#'+id))$('#'+id).value=d[id]||'';
+ for(const id of ['cat','bulkCat'])if($('#'+id)&&d[id]&&[...$('#'+id).options].some(o=>o.value===d[id]))$('#'+id).value=d[id];
+ bulkRows=Array.isArray(d.bulkRows)?d.bulkRows:[];bulkSource=d.bulkSource||'';
+ if(bulkRows.length)renderBulkPreview();
+}
+function saveQuizCheckpoint(){
+ if(!quiz.pool?.length)return;
+ localSave('quiz',{pool:quiz.pool.map(x=>({id:String(x.word.id),mode:x.mode})),retry:(quiz.retry||[]).map(x=>({id:String(x.word.id),mode:x.mode})),i:quiz.i,score:quiz.score,wrongFirst:quiz.wrongFirst,attempts:quiz.attempts,originalCount:quiz.originalCount,retryRound:!!quiz.retryRound,answered:!!quiz.answered,lastOk:quiz.lastOk??null,selectedId:quiz.selectedId??null,answerText:$('#answer')?.value||''});
+}
+function restoreQuizCheckpoint(){
+ const saved=localRead('quiz');if(!saved?.pool?.length)return false;
+ const byId=new Map(words.map(w=>[String(w.id),w]));
+ const revive=items=>(items||[]).map(x=>({word:byId.get(String(x.id)),mode:x.mode})).filter(x=>x.word);
+ const pool=revive(saved.pool);if(pool.length!==saved.pool.length){localClear('quiz');return false}
+ quiz={pool,retry:revive(saved.retry),i:saved.i||0,score:saved.score||0,wrongFirst:saved.wrongFirst||0,attempts:saved.attempts||0,originalCount:saved.originalCount||pool.length,retryRound:!!saved.retryRound,answered:false,advancing:false};
+ showQuestion();
+ if(saved.answerText&&$('#answer'))$('#answer').value=saved.answerText;
+ if(saved.answered){
+  quiz.answered=true;quiz.lastOk=saved.lastOk;quiz.selectedId=saved.selectedId;
+  if(saved.selectedId)document.querySelectorAll('.answers button').forEach(b=>b.classList.toggle('selected',b.dataset.wordId===String(saved.selectedId)));
+  displayAnswerFeedback(!!saved.lastOk);
+  if(saved.lastOk)quiz.nextTimer=setTimeout(nextQuestion,500);
+ }
+ saveQuizCheckpoint();
+ return true;
+}
+function displayAnswerFeedback(ok){
+ const f=$('#feedback');if(!f)return;
+ f.className='feedback '+(ok?'correct':'wrong');
+ f.innerHTML=ok?'✓ Chính xác!':`✗ Đáp án: <b>${esc(quiz.mode==='v2k'?quiz.current.korean:quiz.current.vietnamese)}</b>`;
+ const b=document.createElement('button');b.className='btn';b.textContent='Câu tiếp theo →';b.onclick=nextQuestion;
+ f.appendChild(document.createElement('br'));f.appendChild(b);
+}
+window.addEventListener('pagehide',()=>{saveWordsDraft();saveQuizCheckpoint()});
+document.addEventListener('visibilitychange',()=>{if(document.hidden){saveWordsDraft();saveQuizCheckpoint()}});
+
 
 const $=s=>document.querySelector(s), esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 function shuffle(a){
@@ -52,14 +99,23 @@ function shuffle(a){
 function catName(id){return cats.find(c=>c.id===id)?.name||'Không mục'}
 function err(e){console.error(e);alert(e?.message||'Có lỗi xảy ra')}
 async function user(){let {data}=await sb.auth.getUser();return data.user}
-async function loadData(){
- let u=await user(); if(!u)return;
- let [a,b]=await Promise.all([
-  sb.from('categories').select('*').order('created_at'),
-  sb.from('words').select('*').order('created_at')
- ]);
- if(a.error)throw a.error;if(b.error)throw b.error;cats=a.data||[];words=b.data||[];
+// Supabase defaults to a limited number of rows per response. Fetch every page.
+async function fetchAllRows(table, orderColumn='created_at'){
+ const pageSize=500, all=[];
+ for(let offset=0;;offset+=pageSize){
+  const {data,error}=await sb.from(table).select('*').order(orderColumn,{ascending:true}).order('id',{ascending:true}).range(offset,offset+pageSize-1);
+  if(error)throw error;
+  const batch=data||[];all.push(...batch);
+  if(batch.length<pageSize)break;
+ }
+ return all;
 }
+async function loadData(){
+ const u=await user();if(!u)return;
+ const [loadedCats,loadedWords]=await Promise.all([fetchAllRows('categories'),fetchAllRows('words')]);
+ cats=loadedCats;words=loadedWords;
+}
+
 function authPage(){
  $('#nav').classList.add('hidden');
  main.innerHTML=`<div class="card auth"><h2>☁️ Đồng bộ dữ liệu</h2>
@@ -77,31 +133,33 @@ async function signup(){let email=$('#email').value.trim(),password=$('#pass').v
  alert('Đã tạo tài khoản. Nếu Supabase yêu cầu xác nhận email, hãy mở email rồi đăng nhập.')}
 async function boot(){if(!configured){$('#nav').classList.add('hidden');main.innerHTML=`<div class="card auth"><h2>⚙️ Chưa cấu hình Supabase</h2><p>Thay SUPABASE_URL và SUPABASE_KEY trong index.html bằng thông tin project của bạn.</p></div>`;return}
  let u=await user();if(!u)return authPage();
- $('#nav').classList.remove('hidden');try{await loadData();home()}catch(e){err(e)}}
+ activeUserId=u.id;
+ $('#nav').classList.remove('hidden');try{await loadData();if(restoreQuizCheckpoint()){document.querySelectorAll('nav button').forEach(x=>x.classList.toggle('active',x.dataset.page==='learn'))}else home()}catch(e){err(e)}}
 $('#nav').onclick=e=>{let b=e.target.closest('button');if(!b)return;document.querySelectorAll('nav button').forEach(x=>x.classList.remove('active'));b.classList.add('active');render(b.dataset.page)}
-function render(p){if(p==='home')home();else if(p==='words')wordsPage();else if(p==='learn')learnSetup();else stats()}
+function render(p){if(p==='home')home();else if(p==='words')wordsPage();else if(p==='learn'){if(!restoreQuizCheckpoint())learnSetup();}else stats()}
 function home(){
  main.innerHTML=`<div class="grid"><div class="stat"><b>${words.length}</b><span>Tổng từ</span></div><div class="stat"><b>${cats.length}</b><span>Chủ đề</span></div><div class="stat"><b>${words.reduce((a,w)=>a+w.correct_count,0)}</b><span>Đúng</span></div><div class="stat"><b>${words.reduce((a,w)=>a+w.wrong_count,0)}</b><span>Sai</span></div></div>
- <div class="card"><h2>🎯 Học ngay</h2><p class="small">Dữ liệu được lấy từ database online.</p><button class="btn" onclick="$('#nav button[data-page=learn]').click()">Bắt đầu học</button></div>
+ <div class="card"><h2>🎯 Học ngay</h2><p class="small">Dữ liệu được lấy từ database online.</p><button class="btn" onclick="$('#nav button[data-page=learn]').click()">Tiếp tục học / Bắt đầu</button></div>
  <div class="card"><div class="row"><h2 style="margin:0;flex:1">📁 Chủ đề</h2><button class="btn secondary fit" onclick="logout()">Đăng xuất</button></div><div class="list">${cats.map(c=>`<div class="word"><div><b>${esc(c.name)}</b><div class="small">${words.filter(w=>String(w.category_id)===String(c.id)).length} từ</div></div><div class="category-actions"><button class="btn secondary fit" onclick="editCat('${c.id}')">Sửa</button><button class="btn danger fit" onclick="delCat('${c.id}')">Xóa</button></div></div>`).join('')||'<div class="empty">Chưa có chủ đề.</div>'}</div></div>`;
 }
-async function logout(){await sb.auth.signOut();location.reload()}
+async function logout(){localClear('quiz');localClear('draft');await sb.auth.signOut();location.reload()}
 function wordsPage(){
  if(selectedAddCat && !cats.some(c=>String(c.id)===String(selectedAddCat))) selectedAddCat='';
  if(!selectedAddCat && cats.length) selectedAddCat=cats[0].id;
  if(currentFilterCat!=='all' && !cats.some(c=>String(c.id)===String(currentFilterCat))) currentFilterCat='all';
  const shownWords=currentFilterCat==='all'?words:words.filter(w=>String(w.category_id)===String(currentFilterCat));
- main.innerHTML=`<div class="card"><h2>➕ Thêm từ</h2><div class="grid"><input id="ko" placeholder="Tiếng Hàn"><input id="vi" placeholder="Nghĩa tiếng Việt"></div>
+ main.innerHTML=`<div class="card"><h2>➕ Thêm từ</h2><p class="small">Nếu một từ có nhiều nghĩa hoặc từ đồng nghĩa, ngăn cách bằng dấu ;. Khi học, nhập đúng một đáp án là đủ.</p><div class="grid"><input id="ko" placeholder="Tiếng Hàn"><input id="vi" placeholder="Nghĩa tiếng Việt"></div>
   <div class="row" style="margin-top:9px"><select id="cat" onchange="selectedAddCat=this.value">${cats.map(c=>`<option value="${c.id}" ${String(c.id)===String(selectedAddCat)?'selected':''}>${esc(c.name)}</option>`).join('')}</select><button class="btn fit" onclick="addWord()">Thêm</button></div>
   <div class="row" style="margin-top:9px"><input id="newcat" placeholder="Tên mục mới"><button class="btn secondary fit" onclick="addCat()">+ Tạo mục</button></div></div>
-  <div class="card"><h2>📥 Thêm nhiều từ cùng lúc</h2><p class="small">Mỗi dòng một cặp, ví dụ: 사과 = Táo. Hỗ trợ dấu =, tab hoặc dấu |. Với CSV, có thể dùng cột korean,vietnamese,category (tên chủ đề).</p>
+  <div class="card"><h2>📥 Thêm nhiều từ cùng lúc</h2><p class="small">Mỗi dòng một cặp, ví dụ: 사과 = Táo. Nhiều nghĩa hoặc từ đồng nghĩa ngăn bằng dấu ; (ví dụ: 눈 = Mắt; Tuyết). Hỗ trợ dấu =, tab hoặc dấu |. Với CSV, có thể dùng cột korean,vietnamese,category (tên chủ đề).</p>
   <textarea id="bulkText" rows="5" placeholder="사과 = Táo&#10;우유 = Sữa&#10;물 = Nước"></textarea>
   <div class="row" style="margin-top:10px"><select id="bulkCat" onchange="updateBulkFlags()">${cats.map(c=>`<option value="${c.id}" ${String(c.id)===String(selectedAddCat)?'selected':''}>${esc(c.name)}</option>`).join('')}</select><button class="btn secondary fit" onclick="previewBulkText()">Xem trước danh sách</button></div>
   <div class="row" style="margin-top:9px"><label class="btn secondary fit">Chọn file CSV<input type="file" accept=".csv,text/csv" hidden onchange="previewBulkCSV(this.files[0]);this.value=''" /></label><span class="small">CSV có cột category sẽ giữ tên chủ đề theo file. Nếu không có, dùng chủ đề đã chọn.</span></div>
   <div id="bulkPreview"></div></div>
-  <div class="card"><div class="row"><h2 style="flex:1">📖 Danh sách từ</h2><button class="btn secondary fit" onclick="exportCSV()">Xuất CSV</button><label class="btn secondary fit">Nhập CSV<input type="file" accept=".csv,text/csv" hidden onchange="previewBulkCSV(this.files[0]);this.value=''"></label></div>
+  <div class="card"><div class="row"><h2 style="flex:1">📖 Danh sách từ</h2><button class="btn secondary fit" onclick="exportCSV()">Xuất CSV</button><button class="btn secondary fit" onclick="backupJSON()">Sao lưu JSON</button><label class="btn secondary fit">Khôi phục JSON<input type="file" accept=".json,application/json" hidden onchange="restoreJSON(this.files[0]);this.value=''" /></label><label class="btn secondary fit">Nhập CSV<input type="file" accept=".csv,text/csv" hidden onchange="previewBulkCSV(this.files[0]);this.value=''"></label></div>
   <div class="row" style="margin:0 0 12px"><label class="small" for="wordFilter" style="flex:0 0 auto">Lọc theo chủ đề</label><select id="wordFilter" onchange="filterWords(this.value)"><option value="all" ${currentFilterCat==='all'?'selected':''}>Tất cả chủ đề (${words.length})</option>${cats.map(c=>`<option value="${c.id}" ${String(currentFilterCat)===String(c.id)?'selected':''}>${esc(c.name)} (${words.filter(w=>String(w.category_id)===String(c.id)).length})</option>`).join('')}</select></div>
   <div id="wordList" class="list">${shownWords.length?shownWords.map(w=>`<div class="word"><div><div class="kr">${esc(w.korean)}</div><div class="vi">${esc(w.vietnamese)}</div></div><div class="row fit"><span class="tag">${esc(catName(w.category_id))}</span><button class="btn secondary fit" onclick="editWord('${w.id}')">Sửa</button><button class="btn danger fit" onclick="delWord('${w.id}')">Xóa</button></div></div>`).join(''):'<div class="empty">Chủ đề này chưa có từ.</div>'}</div></div>`;
+ restoreWordsDraft();
 }
 function filterWords(categoryId){
  currentFilterCat=String(categoryId||'all');
@@ -138,7 +196,7 @@ async function delCat(id){
 }
 async function addWord(){let korean=$('#ko').value.trim(),vietnamese=$('#vi').value.trim(),category_id=$('#cat').value;if(!korean||!vietnamese)return alert('Nhập đủ tiếng Hàn và nghĩa.');
  selectedAddCat=category_id;currentFilterCat=category_id;
- let u=await user();let {error}=await sb.from('words').insert({user_id:u.id,korean,vietnamese,category_id});if(error)return err(error);await loadData();wordsPage()}
+ let u=await user();let {error}=await sb.from('words').insert({user_id:u.id,korean,vietnamese,category_id});if(error)return err(error);localClear('draft');await loadData();wordsPage()}
 async function editWord(id){
  const w=words.find(x=>String(x.id)===String(id));if(!w)return;
  const korean=prompt('Sửa từ tiếng Hàn:',w.korean);if(korean===null)return;
@@ -159,10 +217,60 @@ async function editWord(id){
  await loadData();wordsPage();
 }
 async function delWord(id){if(!confirm('Xóa từ này?'))return;let {error}=await sb.from('words').delete().eq('id',id);if(error)return err(error);await loadData();wordsPage()}
+function downloadFile(filename,content,type){
+ const url=URL.createObjectURL(new Blob([content],{type}));
+ const a=document.createElement('a');a.href=url;a.download=filename;document.body.appendChild(a);a.click();a.remove();
+ setTimeout(()=>URL.revokeObjectURL(url),60000);
+}
 function exportCSV(){
- let rows=[['korean','vietnamese','category']].concat(words.map(w=>[w.korean,w.vietnamese,catName(w.category_id)]));
- let csv=rows.map(r=>r.map(x=>`"${String(x).replaceAll('"','""')}"`).join(',')).join('\n');
- let a=document.createElement('a');a.href=URL.createObjectURL(new Blob(['\\ufeff'+csv],{type:'text/csv;charset=utf-8'}));a.download='korean-vocab.csv';a.click()
+ const rows=[['korean','vietnamese','category']].concat(words.map(w=>[w.korean,w.vietnamese,catName(w.category_id)]));
+ const csv=rows.map(r=>r.map(x=>`"${String(x??'').replaceAll('"','""')}"`).join(',')).join('\n');
+ downloadFile('korean-vocab.csv','\ufeff'+csv,'text/csv;charset=utf-8');
+}
+function backupJSON(){
+ const payload={format:'korean-vocab-backup',version:1,exported_at:new Date().toISOString(),
+  categories:cats.map(c=>({name:c.name})),
+  words:words.map(w=>({korean:w.korean,vietnamese:w.vietnamese,category:catName(w.category_id),correct_count:w.correct_count||0,wrong_count:w.wrong_count||0}))};
+ downloadFile('korean-vocab-backup-'+new Date().toISOString().slice(0,10)+'.json',JSON.stringify(payload,null,2),'application/json;charset=utf-8');
+}
+let restoreBusy=false;
+async function restoreJSON(file){
+ if(!file||restoreBusy)return;
+ if(file.size>15*1024*1024)return alert('File JSON quá lớn (giới hạn 15 MB).');
+ let payload;
+ try{payload=JSON.parse(await file.text())}catch(e){return alert('File JSON không hợp lệ.')}
+ if(payload?.format!=='korean-vocab-backup'||payload.version!==1||!Array.isArray(payload.categories)||!Array.isArray(payload.words))return alert('Không đúng định dạng bản sao lưu V10.');
+ if(payload.words.length>100000)return alert('Bản sao lưu có quá nhiều từ.');
+ const safeName=x=>typeof x==='string'?x.trim():'';
+ const validCats=payload.categories.every(c=>c&&safeName(c.name));
+ const validWords=payload.words.every(w=>w&&safeName(w.korean)&&safeName(w.vietnamese)&&safeName(w.category)&&Number.isSafeInteger(w.correct_count)&&w.correct_count>=0&&Number.isSafeInteger(w.wrong_count)&&w.wrong_count>=0);
+ if(!validCats||!validWords)return alert('Bản sao lưu có dữ liệu không hợp lệ. Không nhập dữ liệu.');
+ const existing=new Set(words.map(w=>String(w.category_id)+'\u0000'+w.korean.trim().toLocaleLowerCase()));
+ const catMap=new Map(cats.map(c=>[c.name.trim().toLocaleLowerCase(),c.id]));
+ const backupUnique=new Set();const pending=[];
+ for(const w of payload.words){
+  const key=w.category.trim().toLocaleLowerCase()+'\u0000'+w.korean.trim().toLocaleLowerCase();
+  if(backupUnique.has(key))continue;backupUnique.add(key);
+  const cid=catMap.get(w.category.trim().toLocaleLowerCase());
+  if(cid&&existing.has(String(cid)+'\u0000'+w.korean.trim().toLocaleLowerCase()))continue;
+  pending.push(w);
+ }
+ const newCatNames=new Map();
+ for(const c of payload.categories){const name=c.name.trim(),key=name.toLocaleLowerCase();if(!catMap.has(key))newCatNames.set(key,name)}
+ for(const w of pending){const name=w.category.trim(),key=name.toLocaleLowerCase();if(!catMap.has(key))newCatNames.set(key,name)}
+ if(!confirm(`Khôi phục bản sao lưu: ${payload.words.length} từ, ${payload.categories.length} chủ đề.\nDự kiến thêm ${pending.length} từ mới và ${newCatNames.size} chủ đề mới.\nTừ đã có (cùng tên tiếng Hàn và chủ đề) sẽ được bỏ qua, không ghi đè tiến độ. Tiếp tục?`))return;
+ restoreBusy=true;let saved=0;
+ try{
+  const u=await user();if(!u)throw Error('Chưa đăng nhập.');
+  for(const [key,name] of newCatNames){
+   const {data,error}=await sb.from('categories').insert({user_id:u.id,name}).select().single();
+   if(error)throw error;catMap.set(key,data.id);
+  }
+  const inserts=pending.map(w=>({user_id:u.id,category_id:catMap.get(w.category.trim().toLocaleLowerCase()),korean:w.korean.trim(),vietnamese:w.vietnamese.trim(),correct_count:w.correct_count,wrong_count:w.wrong_count}));
+  for(let i=0;i<inserts.length;i+=100){const batch=inserts.slice(i,i+100);const {error}=await sb.from('words').insert(batch);if(error)throw error;saved+=batch.length}
+  await loadData();currentFilterCat='all';wordsPage();alert(`Khôi phục thành công: thêm ${saved} từ mới. Các từ cũ được giữ nguyên.`);
+ }catch(e){await loadData().catch(()=>{});err(e);alert(`Khôi phục bị gián đoạn sau khi thêm ${saved} từ. Có thể nhập lại file để bổ sung những từ còn thiếu.`)}
+ finally{restoreBusy=false}
 }
 // CSV parser supporting quoted commas, escaped quotes, CRLF and quoted newlines.
 function parseCSV(text){
@@ -192,7 +300,7 @@ function parseBulkText(text){
 }
 function previewBulkText(){
  const text=$('#bulkText')?.value||'';
- bulkRows=parseBulkText(text);bulkSource='text';renderBulkPreview();
+ bulkRows=parseBulkText(text);bulkSource='text';renderBulkPreview();saveWordsDraft();
 }
 async function previewBulkCSV(file){
  if(!file)return;
@@ -203,7 +311,7 @@ async function previewBulkCSV(file){
   const hasHeader=head.includes('korean')&&head.includes('vietnamese');
   const ki=hasHeader?head.indexOf('korean'):0,vi=hasHeader?head.indexOf('vietnamese'):1,ci=hasHeader?head.indexOf('category'):2;
   bulkRows=data.slice(hasHeader?1:0).map((r,i)=>({korean:(r[ki]||'').trim(),vietnamese:(r[vi]||'').trim(),category:(r[ci]||'').trim(),source:i+1+(hasHeader?1:0)}));
-  bulkSource='csv';renderBulkPreview();
+  bulkSource='csv';renderBulkPreview();saveWordsDraft();
  }catch(e){alert('Không đọc được CSV: '+e.message)}
 }
 async function importCSV(file){return previewBulkCSV(file)}
@@ -229,14 +337,14 @@ function renderBulkPreview(){
  el.innerHTML=`<h3>Xem trước (${bulkRows.length} dòng)</h3><p class="small">${invalid} dòng thiếu thông tin · ${dup} từ trùng (sẽ bỏ qua). Có thể sửa trực tiếp bên dưới trước khi lưu.</p>
  <div class="import-scroll"><table class="import-table"><thead><tr><th>#</th><th>Tiếng Hàn</th><th>Tiếng Việt</th><th>Chủ đề (để trống = chủ đề đã chọn)</th><th>Trạng thái</th><th></th></tr></thead><tbody>
  ${bulkRows.map((r,i)=>`<tr><td>${r.source}</td><td><input lang="ko" value="${esc(r.korean)}" oninput="changeBulkRow(${i},'korean',this.value)"></td><td><input lang="vi" value="${esc(r.vietnamese)}" oninput="changeBulkRow(${i},'vietnamese',this.value)"></td><td><input value="${esc(r.category)}" placeholder="Chủ đề đã chọn" oninput="changeBulkRow(${i},'category',this.value)"></td><td id="bulkFlag${i}" class="${flags[i].invalid?'import-error':flags[i].duplicate?'import-error':'import-ok'}">${flags[i].invalid?'Thiếu dữ liệu':flags[i].duplicate?'Trùng':'Hợp lệ'}</td><td><button class="btn danger fit" onclick="removeBulkRow(${i})">Bỏ</button></td></tr>`).join('')}</tbody></table></div>
- <div class="row" style="margin-top:12px"><button class="btn" id="bulkSave" onclick="saveBulk()">Lưu các từ hợp lệ</button><button class="btn secondary fit" onclick="bulkRows=[];renderBulkPreview()">Hủy</button></div>
+ <div class="row" style="margin-top:12px"><button class="btn" id="bulkSave" onclick="saveBulk()">Lưu các từ hợp lệ</button><button class="btn secondary fit" onclick="bulkRows=[];renderBulkPreview();saveWordsDraft()">Hủy</button></div>
  <div id="bulkStatus" class="small" style="margin-top:8px"></div>`;
 }
-function changeBulkRow(i,key,value){if(!bulkRows[i])return;bulkRows[i][key]=value;updateBulkFlags()}
+function changeBulkRow(i,key,value){if(!bulkRows[i])return;bulkRows[i][key]=value;updateBulkFlags();saveWordsDraft()}
 function updateBulkFlags(){
  const flags=bulkDuplicateFlags();flags.forEach((f,i)=>{const el=$('#bulkFlag'+i);if(!el)return;el.textContent=f.invalid?'Thiếu dữ liệu':f.duplicate?'Trùng':'Hợp lệ';el.className=f.invalid||f.duplicate?'import-error':'import-ok'});
 }
-function removeBulkRow(i){bulkRows.splice(i,1);renderBulkPreview()}
+function removeBulkRow(i){bulkRows.splice(i,1);renderBulkPreview();saveWordsDraft()}
 async function saveBulk(){
  if(bulkBusy)return;
  const flags=bulkDuplicateFlags();const pending=bulkRows.filter((r,i)=>!flags[i].invalid&&!flags[i].duplicate);
@@ -263,7 +371,7 @@ async function saveBulk(){
    const batch=payload.slice(i,i+100);const {error}=await sb.from('words').insert(batch);if(error)throw error;
    saved+=batch.length;if(status)status.textContent=`Đã lưu ${saved}/${payload.length} từ...`;
   }
-  await loadData();currentFilterCat='all';bulkRows=[];wordsPage();alert(`Đã thêm ${saved} từ vựng thành công.`);
+  await loadData();currentFilterCat='all';bulkRows=[];localClear('draft');wordsPage();alert(`Đã thêm ${saved} từ vựng thành công.`);
  }catch(e){await loadData().catch(()=>{});if(status)status.textContent=`Đã lưu ${saved} từ trước khi gặp lỗi. Hãy tải lại danh sách trước khi thử tiếp.`;err(e)}
  finally{bulkBusy=false;if(btn)btn.disabled=false}
 }
@@ -273,7 +381,7 @@ function learnSetup(){
  <div class="card"><h2>📝 Dạng bài</h2><div class="checks"><label class="check"><input class="modecheck" type="checkbox" value="v2k" checked> Việt → Hàn</label><label class="check"><input class="modecheck" type="checkbox" value="k2v" checked> Hàn → Việt</label><label class="check"><input class="modecheck" type="checkbox" value="mcq" checked> ABCD</label></div>
  <select id="count" style="margin-top:14px"><option value="10">10 câu</option><option value="20">20 câu</option><option value="30">30 câu</option><option value="9999">Tất cả</option></select>
  <label class="check" style="display:block;margin-top:12px"><input id="shuffleQuestions" type="checkbox" checked> Trộn thứ tự câu hỏi</label>
- <p class="small">Bỏ chọn để học theo thứ tự từ vựng đã lưu. Các câu trả lời sai sẽ được ôn lại ở cuối bài.</p>
+ <p class="small">Bỏ chọn để học theo thứ tự từ vựng đã lưu. Các câu trả lời sai sẽ được ôn lại ở cuối bài. Với từ nhiều nghĩa, chỉ cần nhập đúng một nghĩa; nhập nhiều nghĩa đúng cũng được.</p>
  <button class="btn" style="width:100%;margin-top:12px" onclick="startQuiz()">Bắt đầu</button></div>`;
 }
 function allCats(){document.querySelectorAll('.catcheck').forEach(x=>x.checked=true)}function clearCats(){document.querySelectorAll('.catcheck').forEach(x=>x.checked=false)}
@@ -289,7 +397,7 @@ function startQuiz(){
  // Each item remembers its question mode across retries.
  quiz={pool:selected.map(w=>({word:w,mode:ms[Math.floor(Math.random()*ms.length)]})),
   retry:[],i:0,score:0,wrongFirst:0,attempts:0,answered:false,advancing:false,originalCount:selected.length};
- showQuestion();
+ showQuestion();saveQuizCheckpoint();
 }
 function showQuestion(){
  if(quiz.nextTimer){clearTimeout(quiz.nextTimer);quiz.nextTimer=null}
@@ -303,35 +411,54 @@ function showQuestion(){
  const h=mode==='v2k'?'Viết tiếng Hàn':mode==='k2v'?'Viết nghĩa tiếng Việt':'Chọn nghĩa đúng';
  let out=`<div class="card quiz"><div>${quiz.retryRound?'🔁 Ôn câu sai · ':''}${quiz.i+1} / ${quiz.pool.length} · Đúng ${quiz.score} lượt</div><div class="progress"><i style="width:${quiz.i/quiz.pool.length*100}%"></i></div><div class="question">${esc(q)}</div><div class="small">${h}</div>`;
  if(mode==='mcq'){
-  const opts=shuffle([w,...shuffle(words.filter(x=>String(x.id)!==String(w.id))).slice(0,3)]);
+  // Avoid distractors sharing any valid meaning with the target, or with each other.
+  const used=new Set(splitAlternatives(w.vietnamese).map(norm));
+  const distractors=[];
+  for(const candidate of shuffle(words.filter(x=>String(x.id)!==String(w.id)))){
+   const meanings=splitAlternatives(candidate.vietnamese).map(norm);
+   if(!meanings.length||meanings.some(m=>used.has(m)))continue;
+   distractors.push(candidate);
+   meanings.forEach(m=>used.add(m));
+   if(distractors.length===3)break;
+  }
+  const opts=shuffle([w,...distractors]);
   out+=`<div class="answers">${opts.map(o=>`<button data-word-id="${esc(o.id)}" onclick="answerMCQ('${o.id}')">${esc(o.vietnamese)}</button>`).join('')}</div>`;
  }else{
   out+=`<div class="row" style="max-width:620px;margin:15px auto"><input id="answer" placeholder="${mode==='v2k'?'Gõ tiếng Hàn...':'Gõ nghĩa tiếng Việt...'}" onkeydown="if(event.key==='Enter')checkText()"><button class="btn fit" onclick="checkText()">Kiểm tra</button></div>`;
  }
- out+='<div id="feedback"></div></div>';main.innerHTML=out;
+ out+='<div id="feedback"></div><button class="btn secondary" style="margin-top:12px" onclick="if(confirm(\'Bỏ tiến độ bài đang học và tạo bài mới?\')){localClear(\'quiz\');quiz={};learnSetup()}">Bắt đầu bài mới</button></div>';main.innerHTML=out;
+ saveQuizCheckpoint();
  if(mode!=='mcq')setTimeout(()=>$('#answer')?.focus(),30);
 }
-function norm(s){return String(s??'').toLowerCase().trim().replace(/\s+/g,' ')}
+function norm(s){return String(s??'').normalize('NFC').toLocaleLowerCase().trim().replace(/\s+/g,' ')}
+// Semicolons separate stored synonyms; semicolons or commas separate submitted answers.
+function splitAlternatives(s){return String(s??'').split(';').map(x=>x.trim()).filter(Boolean)}
+function splitSubmitted(s){return String(s??'').split(/[;,]/).map(x=>norm(x)).filter(Boolean)}
+function isAcceptedAnswer(input,stored){
+ const given=splitSubmitted(input);
+ const allowed=new Set(splitAlternatives(stored).map(norm));
+ return given.length>0 && given.every(x=>allowed.has(x));
+}
 function checkText(){
  if(quiz.answered)return;
- const val=norm($('#answer').value);
- const ans=norm(quiz.mode==='v2k'?quiz.current.korean:quiz.current.vietnamese);
- answerDone(val===ans);
+ const input=$('#answer').value;
+ const expected=quiz.mode==='v2k'?quiz.current.korean:quiz.current.vietnamese;
+ answerDone(isAcceptedAnswer(input,expected));
 }
 function answerMCQ(id){
  if(quiz.answered)return;
  document.querySelectorAll('.answers button').forEach(b=>b.classList.toggle('selected',b.dataset.wordId===String(id)));
- answerDone(String(id)===String(quiz.current.id));
+ quiz.selectedId=String(id);answerDone(String(id)===String(quiz.current.id));
 }
 function nextQuestion(){
  if(quiz.advancing)return;
  quiz.advancing=true;
  if(quiz.nextTimer){clearTimeout(quiz.nextTimer);quiz.nextTimer=null}
- quiz.i++;showQuestion();
+ quiz.i++;quiz.lastOk=null;quiz.selectedId=null;showQuestion();
 }
 async function answerDone(ok){
  if(quiz.answered)return;
- quiz.answered=true;
+ quiz.answered=true;quiz.lastOk=ok;
  const w=quiz.current;
  const item=quiz.pool[quiz.i];
  quiz.attempts++;
@@ -340,12 +467,7 @@ async function answerDone(ok){
   if(!quiz.retryRound)quiz.wrongFirst++;
  }else quiz.score++;
  const patch=ok?{correct_count:(w.correct_count||0)+1}:{wrong_count:(w.wrong_count||0)+1};
- const f=$('#feedback');
- f.className='feedback '+(ok?'correct':'wrong');
- f.innerHTML=ok?'✓ Chính xác!':`✗ Đáp án: <b>${esc(quiz.mode==='v2k'?w.korean:w.vietnamese)}</b>`;
- const b=document.createElement('button');b.className='btn';
- b.textContent='Câu tiếp theo →';b.onclick=nextQuestion;
- f.appendChild(document.createElement('br'));f.appendChild(b);
+ displayAnswerFeedback(ok);saveQuizCheckpoint();
  // Wrong answers require a manual click; correct answers advance after 500 ms.
  if(ok)quiz.nextTimer=setTimeout(nextQuestion,500);
  const {error}=await sb.from('words').update(patch).eq('id',w.id);
@@ -354,6 +476,7 @@ async function answerDone(ok){
 }
 function finishQuiz(){
  const total=quiz.originalCount;
+ localClear('quiz');
  const firstCorrect=total-quiz.wrongFirst;
  main.innerHTML=`<div class="card quiz"><h2>🎉 Hoàn thành</h2><div class="question">${total} / ${total} từ đã ôn xong</div><p>Đúng ngay lần đầu: ${firstCorrect}/${total} (${Math.round(firstCorrect/total*100)}%)</p><p>Đã làm lại ${quiz.attempts-total} lượt để ôn câu sai.</p><button class="btn" onclick="learnSetup()">Học lại</button></div>`;
 }
@@ -361,6 +484,8 @@ function stats(){
  let total=words.reduce((a,w)=>a+w.correct_count+w.wrong_count,0),ok=words.reduce((a,w)=>a+w.correct_count,0);
  main.innerHTML=`<div class="grid"><div class="stat"><b>${total}</b><span>Tổng lượt</span></div><div class="stat"><b>${ok}</b><span>Đúng</span></div><div class="stat"><b>${total?Math.round(ok/total*100):0}%</b><span>Tỷ lệ đúng</span></div></div><div class="card"><h2>🔥 Từ cần ôn</h2><div class="list">${[...words].sort((a,b)=>b.wrong_count-a.wrong_count).slice(0,15).map(w=>`<div class="word"><div><div class="kr">${esc(w.korean)}</div><div class="vi">${esc(w.vietnamese)}</div></div><span class="tag">Sai ${w.wrong_count} · Đúng ${w.correct_count}</span></div>`).join('')}</div></div>`
 }
+document.addEventListener('input',e=>{if(['ko','vi','newcat','bulkText'].includes(e.target.id))saveWordsDraft();if(e.target.id==='answer')saveQuizCheckpoint()});
+document.addEventListener('change',e=>{if(['cat','bulkCat'].includes(e.target.id))saveWordsDraft()});
 sb?.auth.onAuthStateChange((event,session)=>{if(event==='SIGNED_IN'&&session)boot()});
 boot();
 </script></body></html>
