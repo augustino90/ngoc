@@ -14,8 +14,8 @@ main{padding:10px 18px 40px}.card{background:var(--card);border:1px solid var(--
 h2{font-size:20px;margin:4px 0 14px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}
 .stat{padding:16px;border-radius:15px;background:#f0f4ff}.stat b{display:block;font-size:27px}.stat span{color:var(--muted);font-size:13px}
 .row{display:flex;gap:9px;flex-wrap:wrap;align-items:center}.row>*{flex:1}.row .fit{flex:0 0 auto}
-input,select{width:100%;padding:12px;border:1px solid var(--border);border-radius:11px;background:#fff;color:var(--text)}
-.btn{padding:12px 15px;border-radius:11px;background:var(--primary);color:#fff;font-weight:650;border:0}.btn.secondary{background:#edf1f7;color:#273247}.btn.danger{background:#feecec;color:var(--bad)}
+input,select{width:100%;padding:12px;border:1px solid var(--border);border-radius:11px;background:#fff;color:var(--text);font-size:16px}textarea{font-size:16px;width:100%;padding:12px;border:1px solid var(--border);border-radius:11px;font-family:inherit;resize:vertical}.import-table{width:100%;border-collapse:collapse}.import-table td,.import-table th{padding:7px 4px;border-bottom:1px solid var(--border);text-align:left}.import-table input{min-width:115px}.import-scroll{overflow-x:auto}.import-error{color:var(--bad);font-size:13px}.import-ok{color:var(--good);font-size:13px}
+.btn{padding:12px 15px;border-radius:11px;background:var(--primary);color:#fff;font-weight:650;border:0}.btn.secondary{background:#edf1f7;color:#273247}.btn.danger{background:#feecec;color:var(--bad)}.btn:disabled{opacity:.6;cursor:wait}.category-actions{display:flex;gap:6px;flex-wrap:wrap}.category-actions .btn{padding:9px 12px}
 .list{display:flex;flex-direction:column;gap:8px}.word{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:13px;border:1px solid var(--border);border-radius:13px}
 .kr{font-size:19px;font-weight:750}.vi{color:var(--muted)}.tag{font-size:12px;padding:5px 8px;border-radius:8px;background:#eef3ff;color:#4166b8}
 .checks{display:flex;gap:8px;flex-wrap:wrap}.check{border:1px solid var(--border);border-radius:11px;padding:10px 12px;background:#fff}.check input{width:auto;margin-right:6px}
@@ -38,9 +38,17 @@ const sb=configured?supabase.createClient(SUPABASE_URL,SUPABASE_KEY):null;
 let cats=[],words=[],quiz={};
 let selectedAddCat='';
 let currentFilterCat='all';
+let bulkRows=[];let bulkSource='';let bulkBusy=false;
 
 const $=s=>document.querySelector(s), esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
-function shuffle(a){return [...a].sort(()=>Math.random()-.5)}
+function shuffle(a){
+ const result=[...a];
+ for(let i=result.length-1;i>0;i--){
+  const j=Math.floor(Math.random()*(i+1));
+  [result[i],result[j]]=[result[j],result[i]];
+ }
+ return result;
+}
 function catName(id){return cats.find(c=>c.id===id)?.name||'Không mục'}
 function err(e){console.error(e);alert(e?.message||'Có lỗi xảy ra')}
 async function user(){let {data}=await sb.auth.getUser();return data.user}
@@ -75,79 +83,280 @@ function render(p){if(p==='home')home();else if(p==='words')wordsPage();else if(
 function home(){
  main.innerHTML=`<div class="grid"><div class="stat"><b>${words.length}</b><span>Tổng từ</span></div><div class="stat"><b>${cats.length}</b><span>Chủ đề</span></div><div class="stat"><b>${words.reduce((a,w)=>a+w.correct_count,0)}</b><span>Đúng</span></div><div class="stat"><b>${words.reduce((a,w)=>a+w.wrong_count,0)}</b><span>Sai</span></div></div>
  <div class="card"><h2>🎯 Học ngay</h2><p class="small">Dữ liệu được lấy từ database online.</p><button class="btn" onclick="$('#nav button[data-page=learn]').click()">Bắt đầu học</button></div>
- <div class="card"><div class="row"><h2 style="margin:0;flex:1">📁 Chủ đề</h2><button class="btn secondary fit" onclick="logout()">Đăng xuất</button></div><div class="list">${cats.map(c=>`<div class="word"><span>${esc(c.name)}</span><span class="tag">${words.filter(w=>w.category_id===c.id).length} từ</span></div>`).join('')}</div></div>`;
+ <div class="card"><div class="row"><h2 style="margin:0;flex:1">📁 Chủ đề</h2><button class="btn secondary fit" onclick="logout()">Đăng xuất</button></div><div class="list">${cats.map(c=>`<div class="word"><div><b>${esc(c.name)}</b><div class="small">${words.filter(w=>String(w.category_id)===String(c.id)).length} từ</div></div><div class="category-actions"><button class="btn secondary fit" onclick="editCat('${c.id}')">Sửa</button><button class="btn danger fit" onclick="delCat('${c.id}')">Xóa</button></div></div>`).join('')||'<div class="empty">Chưa có chủ đề.</div>'}</div></div>`;
 }
 async function logout(){await sb.auth.signOut();location.reload()}
 function wordsPage(){
- if(selectedAddCat && !cats.some(c=>c.id===selectedAddCat)) selectedAddCat='';
+ if(selectedAddCat && !cats.some(c=>String(c.id)===String(selectedAddCat))) selectedAddCat='';
  if(!selectedAddCat && cats.length) selectedAddCat=cats[0].id;
- if(currentFilterCat!=='all' && !cats.some(c=>c.id===currentFilterCat)) currentFilterCat='all';
+ if(currentFilterCat!=='all' && !cats.some(c=>String(c.id)===String(currentFilterCat))) currentFilterCat='all';
  const shownWords=currentFilterCat==='all'?words:words.filter(w=>String(w.category_id)===String(currentFilterCat));
  main.innerHTML=`<div class="card"><h2>➕ Thêm từ</h2><div class="grid"><input id="ko" placeholder="Tiếng Hàn"><input id="vi" placeholder="Nghĩa tiếng Việt"></div>
-  <div class="row" style="margin-top:9px"><select id="cat" onchange="selectedAddCat=this.value">${cats.map(c=>`<option value="${c.id}" ${c.id===selectedAddCat?'selected':''}>${esc(c.name)}</option>`).join('')}</select><button class="btn fit" onclick="addWord()">Thêm</button></div>
+  <div class="row" style="margin-top:9px"><select id="cat" onchange="selectedAddCat=this.value">${cats.map(c=>`<option value="${c.id}" ${String(c.id)===String(selectedAddCat)?'selected':''}>${esc(c.name)}</option>`).join('')}</select><button class="btn fit" onclick="addWord()">Thêm</button></div>
   <div class="row" style="margin-top:9px"><input id="newcat" placeholder="Tên mục mới"><button class="btn secondary fit" onclick="addCat()">+ Tạo mục</button></div></div>
-  <div class="card"><div class="row"><h2 style="flex:1">📖 Danh sách từ</h2><button class="btn secondary fit" onclick="exportCSV()">Xuất CSV</button><label class="btn secondary fit">Nhập CSV<input type="file" accept=".csv,text/csv" hidden onchange="importCSV(this.files[0])"></label></div>
-  <div class="row" style="margin:0 0 12px"><label class="small" for="wordFilter" style="flex:0 0 auto">Lọc theo chủ đề</label><select id="wordFilter" onchange="filterWords(this.value)"><option value="all" ${currentFilterCat==='all'?'selected':''}>Tất cả chủ đề (${words.length})</option>${cats.map(c=>`<option value="${c.id}" ${currentFilterCat===c.id?'selected':''}>${esc(c.name)} (${words.filter(w=>String(w.category_id)===String(c.id)).length})</option>`).join('')}</select></div>
-  <div id="wordList" class="list">${shownWords.length?shownWords.map(w=>`<div class="word"><div><div class="kr">${esc(w.korean)}</div><div class="vi">${esc(w.vietnamese)}</div></div><div class="row fit"><span class="tag">${esc(catName(w.category_id))}</span><button class="btn danger fit" onclick="delWord('${w.id}')">Xóa</button></div></div>`).join(''):'<div class="empty">Chủ đề này chưa có từ.</div>'}</div></div>`;
+  <div class="card"><h2>📥 Thêm nhiều từ cùng lúc</h2><p class="small">Mỗi dòng một cặp, ví dụ: 사과 = Táo. Hỗ trợ dấu =, tab hoặc dấu |. Với CSV, có thể dùng cột korean,vietnamese,category (tên chủ đề).</p>
+  <textarea id="bulkText" rows="5" placeholder="사과 = Táo&#10;우유 = Sữa&#10;물 = Nước"></textarea>
+  <div class="row" style="margin-top:10px"><select id="bulkCat" onchange="updateBulkFlags()">${cats.map(c=>`<option value="${c.id}" ${String(c.id)===String(selectedAddCat)?'selected':''}>${esc(c.name)}</option>`).join('')}</select><button class="btn secondary fit" onclick="previewBulkText()">Xem trước danh sách</button></div>
+  <div class="row" style="margin-top:9px"><label class="btn secondary fit">Chọn file CSV<input type="file" accept=".csv,text/csv" hidden onchange="previewBulkCSV(this.files[0]);this.value=''" /></label><span class="small">CSV có cột category sẽ giữ tên chủ đề theo file. Nếu không có, dùng chủ đề đã chọn.</span></div>
+  <div id="bulkPreview"></div></div>
+  <div class="card"><div class="row"><h2 style="flex:1">📖 Danh sách từ</h2><button class="btn secondary fit" onclick="exportCSV()">Xuất CSV</button><label class="btn secondary fit">Nhập CSV<input type="file" accept=".csv,text/csv" hidden onchange="previewBulkCSV(this.files[0]);this.value=''"></label></div>
+  <div class="row" style="margin:0 0 12px"><label class="small" for="wordFilter" style="flex:0 0 auto">Lọc theo chủ đề</label><select id="wordFilter" onchange="filterWords(this.value)"><option value="all" ${currentFilterCat==='all'?'selected':''}>Tất cả chủ đề (${words.length})</option>${cats.map(c=>`<option value="${c.id}" ${String(currentFilterCat)===String(c.id)?'selected':''}>${esc(c.name)} (${words.filter(w=>String(w.category_id)===String(c.id)).length})</option>`).join('')}</select></div>
+  <div id="wordList" class="list">${shownWords.length?shownWords.map(w=>`<div class="word"><div><div class="kr">${esc(w.korean)}</div><div class="vi">${esc(w.vietnamese)}</div></div><div class="row fit"><span class="tag">${esc(catName(w.category_id))}</span><button class="btn secondary fit" onclick="editWord('${w.id}')">Sửa</button><button class="btn danger fit" onclick="delWord('${w.id}')">Xóa</button></div></div>`).join(''):'<div class="empty">Chủ đề này chưa có từ.</div>'}</div></div>`;
 }
 function filterWords(categoryId){
  currentFilterCat=String(categoryId||'all');
- const shownWords=currentFilterCat==='all'?words:words.filter(w=>String(w.category_id)===currentFilterCat);
+ const shownWords=currentFilterCat==='all'?words:words.filter(w=>String(w.category_id)===String(currentFilterCat));
  const list=$('#wordList');
  if(!list)return;
- list.innerHTML=shownWords.length?shownWords.map(w=>`<div class="word"><div><div class="kr">${esc(w.korean)}</div><div class="vi">${esc(w.vietnamese)}</div></div><div class="row fit"><span class="tag">${esc(catName(w.category_id))}</span><button class="btn danger fit" onclick="delWord('${w.id}')">Xóa</button></div></div>`).join(''):'<div class="empty">Chủ đề này chưa có từ.</div>';
+ list.innerHTML=shownWords.length?shownWords.map(w=>`<div class="word"><div><div class="kr">${esc(w.korean)}</div><div class="vi">${esc(w.vietnamese)}</div></div><div class="row fit"><span class="tag">${esc(catName(w.category_id))}</span><button class="btn secondary fit" onclick="editWord('${w.id}')">Sửa</button><button class="btn danger fit" onclick="delWord('${w.id}')">Xóa</button></div></div>`).join(''):'<div class="empty">Chủ đề này chưa có từ.</div>';
 }
 async function addCat(){let name=$('#newcat').value.trim();if(!name)return;let u=await user();let {data,error}=await sb.from('categories').insert({user_id:u.id,name}).select().single();if(error)return err(error);await loadData();selectedAddCat=data.id;currentFilterCat=data.id;wordsPage()}
+async function editCat(id){
+ const cat=cats.find(c=>String(c.id)===String(id));if(!cat)return;
+ const name=prompt('Nhập tên mới cho chủ đề:',cat.name);
+ if(name===null)return;
+ const clean=name.trim();if(!clean)return alert('Tên chủ đề không được để trống.');
+ if(clean===cat.name)return;
+ if(cats.some(c=>String(c.id)!==String(id)&&c.name.toLocaleLowerCase()===clean.toLocaleLowerCase()))return alert('Tên chủ đề đã tồn tại.');
+ const u=await user();if(!u)return;
+ const {error}=await sb.from('categories').update({name:clean}).eq('id',id).eq('user_id',u.id);
+ if(error)return err(error);await loadData();home();
+}
+async function delCat(id){
+ const cat=cats.find(c=>String(c.id)===String(id));if(!cat)return;
+ const count=words.filter(w=>String(w.category_id)===String(id)).length;
+ const message=count?`Xóa chủ đề “${cat.name}” và TOÀN BỘ ${count} từ vựng trong chủ đề này? Tiến độ của những từ này cũng sẽ mất. Không thể hoàn tác!`:`Xóa chủ đề “${cat.name}”? Không thể hoàn tác!`;
+ if(!confirm(message))return;
+ const u=await user();if(!u)return;
+ // Delete words first to support databases with a restrictive foreign key.
+ if(count){const {error}=await sb.from('words').delete().eq('category_id',id).eq('user_id',u.id);if(error)return err(error)}
+ const {error}=await sb.from('categories').delete().eq('id',id).eq('user_id',u.id);
+ if(error){await loadData();return err(error)}
+ if(String(selectedAddCat)===String(id))selectedAddCat='';
+ if(String(currentFilterCat)===String(id))currentFilterCat='all';
+ await loadData();home();
+}
 async function addWord(){let korean=$('#ko').value.trim(),vietnamese=$('#vi').value.trim(),category_id=$('#cat').value;if(!korean||!vietnamese)return alert('Nhập đủ tiếng Hàn và nghĩa.');
  selectedAddCat=category_id;currentFilterCat=category_id;
  let u=await user();let {error}=await sb.from('words').insert({user_id:u.id,korean,vietnamese,category_id});if(error)return err(error);await loadData();wordsPage()}
+async function editWord(id){
+ const w=words.find(x=>String(x.id)===String(id));if(!w)return;
+ const korean=prompt('Sửa từ tiếng Hàn:',w.korean);if(korean===null)return;
+ const vietnamese=prompt('Sửa nghĩa tiếng Việt:',w.vietnamese);if(vietnamese===null)return;
+ const ko=korean.trim(),vi=vietnamese.trim();
+ if(!ko||!vi)return alert('Từ tiếng Hàn và nghĩa tiếng Việt không được để trống.');
+ const options=cats.map((c,i)=>`${i+1}. ${c.name}`).join('\n');
+ const index=cats.findIndex(c=>String(c.id)===String(w.category_id));
+ const choice=prompt('Chọn chủ đề bằng số (1-'+cats.length+'):\n'+options,String(index+1));
+ if(choice===null)return;
+ const n=Number(choice.trim());
+ if(!Number.isInteger(n)||n<1||n>cats.length)return alert('Số chủ đề không hợp lệ.');
+ const category_id=cats[n-1].id;
+ if(ko===w.korean&&vi===w.vietnamese&&String(category_id)===String(w.category_id))return;
+ const u=await user();if(!u)return;
+ const {error}=await sb.from('words').update({korean:ko,vietnamese:vi,category_id}).eq('id',id).eq('user_id',u.id);
+ if(error)return err(error);
+ await loadData();wordsPage();
+}
 async function delWord(id){if(!confirm('Xóa từ này?'))return;let {error}=await sb.from('words').delete().eq('id',id);if(error)return err(error);await loadData();wordsPage()}
 function exportCSV(){
  let rows=[['korean','vietnamese','category']].concat(words.map(w=>[w.korean,w.vietnamese,catName(w.category_id)]));
- let csv=rows.map(r=>r.map(x=>`"${String(x).replaceAll('"','""')}"`).join(',')).join('\\n');
+ let csv=rows.map(r=>r.map(x=>`"${String(x).replaceAll('"','""')}"`).join(',')).join('\n');
  let a=document.createElement('a');a.href=URL.createObjectURL(new Blob(['\\ufeff'+csv],{type:'text/csv;charset=utf-8'}));a.download='korean-vocab.csv';a.click()
 }
-async function importCSV(file){
- if(!file)return;let text=await file.text();let lines=text.replace(/^\\ufeff/,'').trim().split(/\\r?\\n/);if(lines.length<2)return;
- let u=await user(), catMap=new Map(cats.map(c=>[c.name,c.id])), inserts=[];
- for(let i=1;i<lines.length;i++){let p=lines[i].match(/("([^"]|"")*"|[^,]*)/g);let cols=[];let re=/(?:^|,)(?:"((?:"")*)"|([^,]*))/g,m;while((m=re.exec(lines[i])))cols.push((m[1]??m[2]??'').replaceAll('""','"'));if(cols.length<2)continue;
-  let cname=cols[2]?.trim()||'Chưa phân loại';let cid=catMap.get(cname);
-  if(!cid){let {data,error}=await sb.from('categories').insert({user_id:u.id,name:cname}).select().single();if(error)return err(error);cid=data.id;catMap.set(cname,cid);cats.push(data)}
-  inserts.push({user_id:u.id,korean:cols[0].trim(),vietnamese:cols[1].trim(),category_id:cid})
+// CSV parser supporting quoted commas, escaped quotes, CRLF and quoted newlines.
+function parseCSV(text){
+ const rows=[];let row=[],field='',quoted=false;
+ text=String(text).replace(/^\uFEFF/,'');
+ for(let i=0;i<text.length;i++){
+  const ch=text[i];
+  if(quoted){if(ch==='"'&&text[i+1]==='"'){field+='"';i++}else if(ch==='"')quoted=false;else field+=ch}
+  else if(ch==='"'&&field==='')quoted=true;
+  else if(ch===','){row.push(field);field=''}
+  else if(ch==='\n'||ch==='\r'){if(ch==='\r'&&text[i+1]==='\n')i++;row.push(field);if(row.some(v=>v.trim()))rows.push(row);row=[];field=''}
+  else field+=ch;
  }
- if(inserts.length){let {error}=await sb.from('words').insert(inserts);if(error)return err(error)}await loadData();currentFilterCat='all';wordsPage()
+ if(quoted)throw Error('CSV có dấu ngoặc kép chưa đóng.');
+ row.push(field);if(row.some(v=>v.trim()))rows.push(row);
+ return rows;
 }
+function parseBulkText(text){
+ const rows=[];
+ for(const [i,line] of String(text).split(/\r?\n/).entries()){
+  if(!line.trim())continue;
+  const match=line.match(/^\s*(.*?)\s*(?:\t|\s*[=|]\s*)(.*?)\s*$/);
+  if(!match){rows.push({korean:line.trim(),vietnamese:'',category:'',source:i+1});continue}
+  rows.push({korean:match[1].trim(),vietnamese:match[2].trim(),category:'',source:i+1});
+ }
+ return rows;
+}
+function previewBulkText(){
+ const text=$('#bulkText')?.value||'';
+ bulkRows=parseBulkText(text);bulkSource='text';renderBulkPreview();
+}
+async function previewBulkCSV(file){
+ if(!file)return;
+ try{
+  const data=parseCSV(await file.text());
+  if(!data.length)throw Error('File CSV trống.');
+  const head=data[0].map(x=>x.trim().toLowerCase());
+  const hasHeader=head.includes('korean')&&head.includes('vietnamese');
+  const ki=hasHeader?head.indexOf('korean'):0,vi=hasHeader?head.indexOf('vietnamese'):1,ci=hasHeader?head.indexOf('category'):2;
+  bulkRows=data.slice(hasHeader?1:0).map((r,i)=>({korean:(r[ki]||'').trim(),vietnamese:(r[vi]||'').trim(),category:(r[ci]||'').trim(),source:i+1+(hasHeader?1:0)}));
+  bulkSource='csv';renderBulkPreview();
+ }catch(e){alert('Không đọc được CSV: '+e.message)}
+}
+async function importCSV(file){return previewBulkCSV(file)}
+function bulkDuplicateFlags(){
+ const catId=$('#bulkCat')?.value||selectedAddCat;
+ const current=new Set(words.map(w=>String(w.category_id)+'\u0000'+w.korean.trim().toLocaleLowerCase()));
+ const seen=new Set();
+ return bulkRows.map(r=>{
+  const name=(r.category||'').trim();
+  const cid=name?(cats.find(c=>c.name.toLocaleLowerCase()===name.toLocaleLowerCase())?.id||'new:'+name.toLocaleLowerCase()):catId;
+  const key=String(cid)+'\u0000'+r.korean.trim().toLocaleLowerCase();
+  const invalid=!r.korean.trim()||!r.vietnamese.trim()||!cid;
+  const duplicate=!invalid&&(current.has(key)||seen.has(key));
+  if(!invalid)seen.add(key);
+  return {invalid,duplicate,cid};
+ });
+}
+function renderBulkPreview(){
+ const el=$('#bulkPreview');if(!el)return;
+ if(!bulkRows.length){el.innerHTML='<p class="small">Không có từ nào để xem trước.</p>';return}
+ const flags=bulkDuplicateFlags();
+ const invalid=flags.filter(x=>x.invalid).length,dup=flags.filter(x=>x.duplicate).length;
+ el.innerHTML=`<h3>Xem trước (${bulkRows.length} dòng)</h3><p class="small">${invalid} dòng thiếu thông tin · ${dup} từ trùng (sẽ bỏ qua). Có thể sửa trực tiếp bên dưới trước khi lưu.</p>
+ <div class="import-scroll"><table class="import-table"><thead><tr><th>#</th><th>Tiếng Hàn</th><th>Tiếng Việt</th><th>Chủ đề (để trống = chủ đề đã chọn)</th><th>Trạng thái</th><th></th></tr></thead><tbody>
+ ${bulkRows.map((r,i)=>`<tr><td>${r.source}</td><td><input lang="ko" value="${esc(r.korean)}" oninput="changeBulkRow(${i},'korean',this.value)"></td><td><input lang="vi" value="${esc(r.vietnamese)}" oninput="changeBulkRow(${i},'vietnamese',this.value)"></td><td><input value="${esc(r.category)}" placeholder="Chủ đề đã chọn" oninput="changeBulkRow(${i},'category',this.value)"></td><td id="bulkFlag${i}" class="${flags[i].invalid?'import-error':flags[i].duplicate?'import-error':'import-ok'}">${flags[i].invalid?'Thiếu dữ liệu':flags[i].duplicate?'Trùng':'Hợp lệ'}</td><td><button class="btn danger fit" onclick="removeBulkRow(${i})">Bỏ</button></td></tr>`).join('')}</tbody></table></div>
+ <div class="row" style="margin-top:12px"><button class="btn" id="bulkSave" onclick="saveBulk()">Lưu các từ hợp lệ</button><button class="btn secondary fit" onclick="bulkRows=[];renderBulkPreview()">Hủy</button></div>
+ <div id="bulkStatus" class="small" style="margin-top:8px"></div>`;
+}
+function changeBulkRow(i,key,value){if(!bulkRows[i])return;bulkRows[i][key]=value;updateBulkFlags()}
+function updateBulkFlags(){
+ const flags=bulkDuplicateFlags();flags.forEach((f,i)=>{const el=$('#bulkFlag'+i);if(!el)return;el.textContent=f.invalid?'Thiếu dữ liệu':f.duplicate?'Trùng':'Hợp lệ';el.className=f.invalid||f.duplicate?'import-error':'import-ok'});
+}
+function removeBulkRow(i){bulkRows.splice(i,1);renderBulkPreview()}
+async function saveBulk(){
+ if(bulkBusy)return;
+ const flags=bulkDuplicateFlags();const pending=bulkRows.filter((r,i)=>!flags[i].invalid&&!flags[i].duplicate);
+ if(!pending.length)return alert('Không có từ hợp lệ mới để lưu.');
+ if(!confirm(`Lưu ${pending.length} từ mới? Các dòng trùng hoặc thiếu thông tin sẽ được bỏ qua.`))return;
+ bulkBusy=true;const btn=$('#bulkSave');if(btn)btn.disabled=true;
+ const status=$('#bulkStatus');if(status)status.textContent='Đang lưu...';
+ let saved=0;
+ try{
+  const u=await user();if(!u)throw Error('Chưa đăng nhập.');
+  const chosen=$('#bulkCat')?.value||selectedAddCat;
+  const map=new Map(cats.map(c=>[c.name.toLocaleLowerCase(),c.id]));
+  const payload=[];
+  for(const r of pending){
+   let cid=chosen;
+   if(r.category.trim()){
+    const name=r.category.trim(),key=name.toLocaleLowerCase();cid=map.get(key);
+    if(!cid){const {data,error}=await sb.from('categories').insert({user_id:u.id,name}).select().single();if(error)throw error;cid=data.id;map.set(key,cid)}
+   }
+   payload.push({user_id:u.id,category_id:cid,korean:r.korean.trim(),vietnamese:r.vietnamese.trim()});
+  }
+  // Small batches avoid overly large requests and allow partial progress reporting.
+  for(let i=0;i<payload.length;i+=100){
+   const batch=payload.slice(i,i+100);const {error}=await sb.from('words').insert(batch);if(error)throw error;
+   saved+=batch.length;if(status)status.textContent=`Đã lưu ${saved}/${payload.length} từ...`;
+  }
+  await loadData();currentFilterCat='all';bulkRows=[];wordsPage();alert(`Đã thêm ${saved} từ vựng thành công.`);
+ }catch(e){await loadData().catch(()=>{});if(status)status.textContent=`Đã lưu ${saved} từ trước khi gặp lỗi. Hãy tải lại danh sách trước khi thử tiếp.`;err(e)}
+ finally{bulkBusy=false;if(btn)btn.disabled=false}
+}
+
 function learnSetup(){
- main.innerHTML=`<div class="card"><h2>🎯 Chọn nội dung</h2><div class="checks">${cats.map(c=>`<label class="check"><input type="checkbox" class="catcheck" value="${c.id}"> ${esc(c.name)} (${words.filter(w=>w.category_id===c.id).length})</label>`).join('')}</div><div class="row" style="margin-top:12px"><button class="btn secondary fit" onclick="allCats()">Chọn tất cả</button><button class="btn secondary fit" onclick="clearCats()">Bỏ chọn</button></div></div>
+ main.innerHTML=`<div class="card"><h2>🎯 Chọn nội dung</h2><div class="checks">${cats.map(c=>`<label class="check"><input type="checkbox" class="catcheck" value="${c.id}"> ${esc(c.name)} (${words.filter(w=>String(w.category_id)===String(c.id)).length})</label>`).join('')}</div><div class="row" style="margin-top:12px"><button class="btn secondary fit" onclick="allCats()">Chọn tất cả</button><button class="btn secondary fit" onclick="clearCats()">Bỏ chọn</button></div></div>
  <div class="card"><h2>📝 Dạng bài</h2><div class="checks"><label class="check"><input class="modecheck" type="checkbox" value="v2k" checked> Việt → Hàn</label><label class="check"><input class="modecheck" type="checkbox" value="k2v" checked> Hàn → Việt</label><label class="check"><input class="modecheck" type="checkbox" value="mcq" checked> ABCD</label></div>
- <select id="count" style="margin-top:14px"><option value="10">10 câu</option><option value="20">20 câu</option><option value="30">30 câu</option><option value="9999">Tất cả</option></select><button class="btn" style="width:100%;margin-top:12px" onclick="startQuiz()">Bắt đầu</button></div>`;
+ <select id="count" style="margin-top:14px"><option value="10">10 câu</option><option value="20">20 câu</option><option value="30">30 câu</option><option value="9999">Tất cả</option></select>
+ <label class="check" style="display:block;margin-top:12px"><input id="shuffleQuestions" type="checkbox" checked> Trộn thứ tự câu hỏi</label>
+ <p class="small">Bỏ chọn để học theo thứ tự từ vựng đã lưu. Các câu trả lời sai sẽ được ôn lại ở cuối bài.</p>
+ <button class="btn" style="width:100%;margin-top:12px" onclick="startQuiz()">Bắt đầu</button></div>`;
 }
 function allCats(){document.querySelectorAll('.catcheck').forEach(x=>x.checked=true)}function clearCats(){document.querySelectorAll('.catcheck').forEach(x=>x.checked=false)}
 function startQuiz(){
- let cs=[...document.querySelectorAll('.catcheck:checked')].map(x=>x.value),ms=[...document.querySelectorAll('.modecheck:checked')].map(x=>x.value),pool=words.filter(w=>cs.includes(w.category_id));
- if(!pool.length)return alert('Chọn ít nhất một mục có từ.');if(!ms.length)return alert('Chọn ít nhất một dạng bài.');
- quiz={pool:shuffle(pool).slice(0,+$('#count').value),modes:ms,i:0,score:0,answered:false};showQuestion()
+ const cs=[...document.querySelectorAll('.catcheck:checked')].map(x=>x.value);
+ const ms=[...document.querySelectorAll('.modecheck:checked')].map(x=>x.value);
+ let pool=words.filter(w=>cs.includes(String(w.category_id)));
+ if(!pool.length)return alert('Chọn ít nhất một mục có từ.');
+ if(!ms.length)return alert('Chọn ít nhất một dạng bài.');
+ const shouldShuffle=$('#shuffleQuestions').checked;
+ if(shouldShuffle)pool=shuffle(pool);
+ const selected=pool.slice(0,+$('#count').value);
+ // Each item remembers its question mode across retries.
+ quiz={pool:selected.map(w=>({word:w,mode:ms[Math.floor(Math.random()*ms.length)]})),
+  retry:[],i:0,score:0,wrongFirst:0,attempts:0,answered:false,advancing:false,originalCount:selected.length};
+ showQuestion();
 }
 function showQuestion(){
- if(quiz.nextTimer)clearTimeout(quiz.nextTimer);
- if(quiz.i>=quiz.pool.length)return finishQuiz();let w=quiz.pool[quiz.i],mode=quiz.modes[Math.floor(Math.random()*quiz.modes.length)];quiz.current=w;quiz.mode=mode;quiz.answered=false;
- let q=mode==='v2k'?w.vietnamese:w.korean,h=mode==='v2k'?'Viết tiếng Hàn':mode==='k2v'?'Viết nghĩa tiếng Việt':'Chọn nghĩa đúng';
- let out=`<div class="card quiz"><div>${quiz.i+1} / ${quiz.pool.length} · Điểm ${quiz.score}</div><div class="progress"><i style="width:${quiz.i/quiz.pool.length*100}%"></i></div><div class="question">${esc(q)}</div><div class="small">${h}</div>`;
- if(mode==='mcq'){let opts=shuffle([w,...shuffle(words.filter(x=>x.id!==w.id)).slice(0,3)]);out+=`<div class="answers">${opts.map(o=>`<button data-word-id="${o.id}" onclick="answerMCQ('${o.id}')">${esc(o.vietnamese)}</button>`).join('')}</div>`}
- else out+=`<div class="row" style="max-width:620px;margin:15px auto"><input id="answer" placeholder="${mode==='v2k'?'Gõ tiếng Hàn...':'Gõ nghĩa tiếng Việt...'}" onkeydown="if(event.key==='Enter')checkText()"><button class="btn fit" onclick="checkText()">Kiểm tra</button></div>`;
- out+=`<div id="feedback"></div></div>`;main.innerHTML=out;if(mode!=='mcq')setTimeout(()=>$('#answer')?.focus(),30)
+ if(quiz.nextTimer){clearTimeout(quiz.nextTimer);quiz.nextTimer=null}
+ if(quiz.i>=quiz.pool.length){
+  if(quiz.retry.length){quiz.pool=quiz.retry;quiz.retry=[];quiz.i=0;quiz.retryRound=true}
+  else return finishQuiz();
+ }
+ const item=quiz.pool[quiz.i],w=item.word,mode=item.mode;
+ quiz.current=w;quiz.mode=mode;quiz.answered=false;quiz.advancing=false;
+ const q=mode==='v2k'?w.vietnamese:w.korean;
+ const h=mode==='v2k'?'Viết tiếng Hàn':mode==='k2v'?'Viết nghĩa tiếng Việt':'Chọn nghĩa đúng';
+ let out=`<div class="card quiz"><div>${quiz.retryRound?'🔁 Ôn câu sai · ':''}${quiz.i+1} / ${quiz.pool.length} · Đúng ${quiz.score} lượt</div><div class="progress"><i style="width:${quiz.i/quiz.pool.length*100}%"></i></div><div class="question">${esc(q)}</div><div class="small">${h}</div>`;
+ if(mode==='mcq'){
+  const opts=shuffle([w,...shuffle(words.filter(x=>String(x.id)!==String(w.id))).slice(0,3)]);
+  out+=`<div class="answers">${opts.map(o=>`<button data-word-id="${esc(o.id)}" onclick="answerMCQ('${o.id}')">${esc(o.vietnamese)}</button>`).join('')}</div>`;
+ }else{
+  out+=`<div class="row" style="max-width:620px;margin:15px auto"><input id="answer" placeholder="${mode==='v2k'?'Gõ tiếng Hàn...':'Gõ nghĩa tiếng Việt...'}" onkeydown="if(event.key==='Enter')checkText()"><button class="btn fit" onclick="checkText()">Kiểm tra</button></div>`;
+ }
+ out+='<div id="feedback"></div></div>';main.innerHTML=out;
+ if(mode!=='mcq')setTimeout(()=>$('#answer')?.focus(),30);
 }
-function norm(s){return s.toLowerCase().trim().replace(/\\s+/g,' ')}
-async function checkText(){if(quiz.answered)return;let val=norm($('#answer').value),ans=norm(quiz.mode==='v2k'?quiz.current.korean:quiz.current.vietnamese);answerDone(val===ans)}
-async function answerMCQ(id){if(quiz.answered)return;document.querySelectorAll('.answers button').forEach(b=>b.classList.toggle('selected',b.dataset.wordId===id));answerDone(id===quiz.current.id)}
+function norm(s){return String(s??'').toLowerCase().trim().replace(/\s+/g,' ')}
+function checkText(){
+ if(quiz.answered)return;
+ const val=norm($('#answer').value);
+ const ans=norm(quiz.mode==='v2k'?quiz.current.korean:quiz.current.vietnamese);
+ answerDone(val===ans);
+}
+function answerMCQ(id){
+ if(quiz.answered)return;
+ document.querySelectorAll('.answers button').forEach(b=>b.classList.toggle('selected',b.dataset.wordId===String(id)));
+ answerDone(String(id)===String(quiz.current.id));
+}
+function nextQuestion(){
+ if(quiz.advancing)return;
+ quiz.advancing=true;
+ if(quiz.nextTimer){clearTimeout(quiz.nextTimer);quiz.nextTimer=null}
+ quiz.i++;showQuestion();
+}
 async function answerDone(ok){
- quiz.answered=true;let w=quiz.current;
- let patch=ok?{correct_count:w.correct_count+1}:{wrong_count:w.wrong_count+1};
- let {error}=await sb.from('words').update(patch).eq('id',w.id);if(error)return err(error);Object.assign(w,patch);if(ok)quiz.score++;
- let f=$('#feedback');f.className='feedback '+(ok?'correct':'wrong');f.innerHTML=ok?'✓ Chính xác!':`✗ Đáp án: <b>${esc(quiz.mode==='v2k'?w.korean:w.vietnamese)}</b>`;
- let b=document.createElement('button');b.className='btn';b.textContent=quiz.i+1<quiz.pool.length?'Câu tiếp theo →':'Xem kết quả';b.onclick=()=>{quiz.i++;showQuestion()};f.appendChild(document.createElement('br'));f.appendChild(b);quiz.nextTimer=setTimeout(()=>{quiz.i++;showQuestion()},1000)
+ if(quiz.answered)return;
+ quiz.answered=true;
+ const w=quiz.current;
+ const item=quiz.pool[quiz.i];
+ quiz.attempts++;
+ if(!ok){
+  quiz.retry.push(item);
+  if(!quiz.retryRound)quiz.wrongFirst++;
+ }else quiz.score++;
+ const patch=ok?{correct_count:(w.correct_count||0)+1}:{wrong_count:(w.wrong_count||0)+1};
+ const f=$('#feedback');
+ f.className='feedback '+(ok?'correct':'wrong');
+ f.innerHTML=ok?'✓ Chính xác!':`✗ Đáp án: <b>${esc(quiz.mode==='v2k'?w.korean:w.vietnamese)}</b>`;
+ const b=document.createElement('button');b.className='btn';
+ b.textContent='Câu tiếp theo →';b.onclick=nextQuestion;
+ f.appendChild(document.createElement('br'));f.appendChild(b);
+ // Wrong answers require a manual click; correct answers advance after 500 ms.
+ if(ok)quiz.nextTimer=setTimeout(nextQuestion,500);
+ const {error}=await sb.from('words').update(patch).eq('id',w.id);
+ if(error){console.error(error);alert('Không lưu được tiến độ: '+(error.message||'Lỗi kết nối'))}
+ else Object.assign(w,patch);
 }
-function finishQuiz(){main.innerHTML=`<div class="card quiz"><h2>🎉 Hoàn thành</h2><div class="question">${quiz.score}/${quiz.pool.length}</div><p>Đúng ${Math.round(quiz.score/quiz.pool.length*100)}%</p><button class="btn" onclick="learnSetup()">Học lại</button></div>`}
+function finishQuiz(){
+ const total=quiz.originalCount;
+ const firstCorrect=total-quiz.wrongFirst;
+ main.innerHTML=`<div class="card quiz"><h2>🎉 Hoàn thành</h2><div class="question">${total} / ${total} từ đã ôn xong</div><p>Đúng ngay lần đầu: ${firstCorrect}/${total} (${Math.round(firstCorrect/total*100)}%)</p><p>Đã làm lại ${quiz.attempts-total} lượt để ôn câu sai.</p><button class="btn" onclick="learnSetup()">Học lại</button></div>`;
+}
 function stats(){
  let total=words.reduce((a,w)=>a+w.correct_count+w.wrong_count,0),ok=words.reduce((a,w)=>a+w.correct_count,0);
  main.innerHTML=`<div class="grid"><div class="stat"><b>${total}</b><span>Tổng lượt</span></div><div class="stat"><b>${ok}</b><span>Đúng</span></div><div class="stat"><b>${total?Math.round(ok/total*100):0}%</b><span>Tỷ lệ đúng</span></div></div><div class="card"><h2>🔥 Từ cần ôn</h2><div class="list">${[...words].sort((a,b)=>b.wrong_count-a.wrong_count).slice(0,15).map(w=>`<div class="word"><div><div class="kr">${esc(w.korean)}</div><div class="vi">${esc(w.vietnamese)}</div></div><span class="tag">Sai ${w.wrong_count} · Đúng ${w.correct_count}</span></div>`).join('')}</div></div>`
